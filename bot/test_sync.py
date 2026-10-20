@@ -31,6 +31,10 @@ class T(unittest.TestCase):
         self.assertIn("groups/10В/ведомость.csv", f); self.assertIn("Иванова Анна", f["groups/10В/ведомость.csv"])
         self.assertIn("new;;9А;", stu); self.assertIn("anna;Иванова Анна;10В", stu)
 
+    def test_net_group(self):
+        f, _ = self.build([iss(1, "x", "x", "нет", "1.1", "решено")])
+        self.assertIn("groups/_без_группы/ведомость.csv", f); self.assertEqual(len(f), len([p for p in f]))
+
     def test_no_response_group(self):
         f, _ = self.build([iss(1, "x", "x", "_No response_", "1.1", "решено")])
         self.assertIn("groups/_без_группы/ведомость.csv", f)

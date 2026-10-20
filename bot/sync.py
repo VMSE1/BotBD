@@ -39,7 +39,7 @@ def norm_group(raw):
     """Группа как безопасное имя папки: буквы, цифры, - и _. Пусто -> _без_группы. Защита от ../ и т. п."""
     g = unicodedata.normalize("NFKC", str(raw or "")).upper()
     g = re.sub(r"[^0-9A-ZА-ЯЁ_-]", "", g)[:20].strip("-_")
-    return g or NO_GROUP
+    return NO_GROUP if g in ("", "НЕТ", "НЕТ_ГРУППЫ", "0", "НЕТУ") else g
 
 
 def status_of(labels):
