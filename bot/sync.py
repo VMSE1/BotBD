@@ -42,6 +42,58 @@ def norm_group(raw):
     return NO_GROUP if g in ("", "НЕТ", "НЕТ_ГРУППЫ", "0", "НЕТУ") else g
 
 
+# ---------- «честный ввод»: те же правила, что в docs/honest.js курса ----------
+def hn_norm(t):
+    t = str(t or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(l.rstrip() for l in t.split("\n")).strip()
+
+
+def hn_hash(t):
+    h = 0x811C9DC5
+    for byte in hn_norm(t).encode("utf-8"):
+        h = ((h ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return "%08x" % h
+
+
+def hn_parse(s):
+    s = (s or "").strip()
+    if not s.startswith("v1;"):
+        return None
+    m = {}
+    for part in s.split(";")[1:]:
+        k, _, v = part.partition("=")
+        if k == "h":
+            m["h"] = re.sub(r"[^0-9a-f]", "", v.lower())[:8]
+        elif k in ("t", "p", "b", "e", "s"):
+            m[k] = int(v) if v.isdigit() and len(v) < 9 else 0
+    return m
+
+
+def hn_verdict(m, code):
+    """(уровень, причины): ok / warn / none."""
+    if m is None:
+        return "none", ["отправлено не через сайт"]
+    r, n = [], len(hn_norm(code))
+    if m.get("h") and m["h"] != hn_hash(code):
+        r.append("код изменён после сайта")
+    if m.get("p", 0) > 0:
+        r.append("пытался вставить: %d" % m["p"])
+    if m.get("b", 0) > 0:
+        r.append("вставка кусками: %d" % m["b"])
+    if m.get("e", 0) > 0:
+        r.append("код изменён скриптом")
+    if n >= 60 and m.get("t", 0) < n * 0.4:
+        r.append("набрано %d из %d символов" % (m.get("t", 0), n))
+    if m.get("s", 0) > 0 and m.get("t", 0) / m["s"] > 12:
+        r.append("слишком быстрый набор")
+    return ("warn" if r else "ok"), r
+
+
+def code_of(sec):
+    m = re.match(r"^```[^\n]*\n(.*?)\n?```\s*$", (sec or "").strip(), re.S)
+    return m.group(1) if m else (sec or "")
+
+
 def status_of(labels):
     names = [l.get("name") if isinstance(l, dict) else l for l in labels or []]
     return "решено" if "решено" in names else ("ошибки" if "ошибки" in names else "ждёт")
@@ -53,9 +105,11 @@ def parse_issue(x):
     if not m:
         return None
     login = (x.get("user") or {}).get("login") or "unknown"
+    level, why = hn_verdict(hn_parse(s.get("Служебное (не меняй)")), code_of(s.get("Код решения")))
     return {"num": x.get("number"), "login": login, "nick": clean_text(s.get("Ник")) or "-", "group": norm_group(s.get("Группа") if s.get("Группа") not in (None, "_No response_") else ""),
             "task": m.group(1), "status": status_of(x.get("labels")), "created": (x.get("created_at") or "")[:16].replace("T", " "),
-            "updated": (x.get("updated_at") or "")[:16].replace("T", " "), "url": x.get("html_url") or ""}
+            "updated": (x.get("updated_at") or "")[:16].replace("T", " "), "url": x.get("html_url") or "",
+            "check": level, "why": "; ".join(why)}
 
 
 # ---------- students.csv ----------
@@ -89,7 +143,7 @@ def aggregate(subs, students, task_ids):
     by = {}
     for s in sorted(subs, key=lambda x: (x["updated"], x["num"] or 0)):
         k = s["login"].lower()
-        u = by.setdefault(k, {"login": s["login"], "nicks": [], "form_group": "", "tasks": {}, "attempts": 0, "fails": 0, "first": s["created"], "last": ""})
+        u = by.setdefault(k, {"login": s["login"], "nicks": [], "form_group": "", "tasks": {}, "attempts": 0, "fails": 0, "warn": 0, "first": s["created"], "last": ""})
         if s["nick"] not in u["nicks"]:
             u["nicks"].append(s["nick"])
         if s["group"] != NO_GROUP:
@@ -99,6 +153,7 @@ def aggregate(subs, students, task_ids):
             u["tasks"][s["task"]] = s["status"]
         u["attempts"] += 1
         u["fails"] += s["status"] == "ошибки"
+        u["warn"] += s["check"] == "warn"
         u["first"] = min(u["first"], s["created"]) if u["first"] else s["created"]
         u["last"] = max(u["last"], s["updated"])
     # дописываем в students.csv новые аккаунты (существующие строки не трогаем)
@@ -117,11 +172,11 @@ def aggregate(subs, students, task_ids):
 
 
 def table_rows(users, task_ids):
-    head = ["Группа", "ФИО", "GitHub", "Ник"] + task_ids + ["Решено", "Всего заданий", "Ошибочных попыток", "Первая сдача", "Последняя активность", "Профиль"]
+    head = ["Группа", "ФИО", "GitHub", "Ник"] + task_ids + ["Решено", "Всего заданий", "Ошибочных попыток", "Сдач с подозрением на вставку", "Первая сдача", "Последняя активность", "Профиль"]
     rows = [head]
     for u in sorted(users, key=lambda u: (u["group"], (u["fio"] or "я").lower(), u["login"].lower())):
         rows.append([u["group"], safe(u["fio"]), safe(u["login"]), safe(", ".join(u["nicks"]))] + [u["tasks"].get(t, "") for t in task_ids] +
-                    [u["solved"], len(task_ids), u["fails"], u["first"], u["last"], "https://github.com/" + re.sub(r"[^0-9A-Za-z-]", "", u["login"])])
+                    [u["solved"], len(task_ids), u["fails"], u["warn"], u["first"], u["last"], "https://github.com/" + re.sub(r"[^0-9A-Za-z-]", "", u["login"])])
     return rows
 
 
@@ -161,8 +216,8 @@ def build_files(subs, students, task_ids):
         solved = sum(u["solved"] for u in us)
         files["groups/%s/README.md" % g] = "# Группа %s\n\nУчеников: %d, решено заданий: %d из %d\n\n%s\n\n✅ решено, ❌ есть ошибки, ⏳ ждёт проверки. Файл `ведомость.csv` открывается в Excel.\n" % (
             md_cell(g), len(us), solved, len(us) * len(task_ids), md_table(rows, task_ids))
-    sub_rows = [["Дата", "GitHub", "Ник", "Группа", "Задание", "Статус", "Ссылка"]] + [
-        [s["updated"], safe(s["login"]), safe(s["nick"]), s["group"], s["task"], s["status"], s["url"]] for s in sorted(subs, key=lambda x: (x["updated"], x["num"] or 0))]
+    sub_rows = [["Дата", "GitHub", "Ник", "Группа", "Задание", "Статус", "Как набран код", "Ссылка"]] + [
+        [s["updated"], safe(s["login"]), safe(s["nick"]), s["group"], s["task"], s["status"], ("набран сам" if s["check"] == "ok" else safe(s["why"])), s["url"]] for s in sorted(subs, key=lambda x: (x["updated"], x["num"] or 0))]
     files["data/submissions.csv"] = csv_text(sub_rows)
     idx = ["# Ведомость курса Python", "", "Данные приватные. Обновляется роботом раз в час (Actions → «Обновить ведомость» → Run workflow для обновления сейчас).", "",
            "| Группа | Учеников | Решено заданий |", "|---|---|---|"]

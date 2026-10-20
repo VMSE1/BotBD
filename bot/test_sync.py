@@ -5,9 +5,36 @@ import sync
 TASKS = ["1.1", "1.2", "1.3"]
 
 
-def iss(n, login, nick, group, task, status, upd="2026-10-20T10:00:00Z"):
+def iss(n, login, nick, group, task, status, upd="2026-10-20T10:00:00Z", meta=None):
     body = "### Ник\n\n%s\n\n### Группа\n\n%s\n\n### Задание\n\n%s — x\n\n### Код решения\n\n```python\nprint(1)\n```" % (nick, group, task)
+    if meta is not None:
+        body += "\n\n### Служебное (не меняй)\n\n" + meta
     return {"number": n, "user": {"login": login}, "body": body, "labels": [{"name": "сдача"}] + ([{"name": status}] if status else []), "created_at": upd, "updated_at": upd, "html_url": "https://github.com/x/y/issues/%d" % n}
+
+
+class Honest(unittest.TestCase):
+    def test_hash_matches_site(self):
+        self.assertEqual(sync.hn_hash("print(1)"), "90ce8e1e")  # то же значение даёт docs/honest.js
+        self.assertEqual(sync.hn_hash("print(1)\r\n"), "90ce8e1e")
+
+    def verdict(self, meta):
+        x = sync.parse_issue(iss(1, "a", "a", "9А", "1.1", "решено", meta=meta))
+        return x["check"], x["why"]
+
+    def test_ok(self):
+        self.assertEqual(self.verdict("v1;t=8;p=0;b=0;e=0;s=10;h=90ce8e1e"), ("ok", ""))
+
+    def test_paste_and_edit_and_none(self):
+        lv, why = self.verdict("v1;t=8;p=2;b=0;e=0;s=10;h=90ce8e1e"); self.assertEqual(lv, "warn"); self.assertIn("вставить: 2", why)
+        lv, why = self.verdict("v1;t=8;p=0;b=0;e=0;s=10;h=00000000"); self.assertEqual(lv, "warn"); self.assertIn("после сайта", why)
+        self.assertEqual(self.verdict(None)[0], "none")
+        self.assertEqual(self.verdict("мусор")[0], "none")
+
+    def test_counted_in_tables(self):
+        subs = [sync.parse_issue(iss(1, "a", "a", "9А", "1.1", "решено", meta="v1;t=8;p=2;b=0;e=0;s=10;h=90ce8e1e"))]
+        f, _ = sync.build_files(subs, {}, TASKS)
+        head = f["groups/9А/ведомость.csv"].split("\r\n")[0]
+        self.assertIn("Сдач с подозрением", head); self.assertIn("пытался вставить", f["data/submissions.csv"])
 
 
 class T(unittest.TestCase):
